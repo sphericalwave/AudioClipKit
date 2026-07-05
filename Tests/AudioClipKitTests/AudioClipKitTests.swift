@@ -68,6 +68,20 @@ final class AudioClipKitTests: XCTestCase {
         XCTAssertNotNil(try? AVAudioFile(forReading: url))
     }
 
+    // MARK: - AudioClipRecorder
+
+    @MainActor
+    func testPauseResumeGatedByPhase() {
+        // Exercises only the phase guards, not real AVAudioRecorder I/O —
+        // CI runners have no microphone, so `start()` isn't tested here.
+        let recorder = AudioClipRecorder()
+        XCTAssertEqual(recorder.phase, .ready)
+        recorder.pause()
+        XCTAssertEqual(recorder.phase, .ready, "pause() before recording must not change phase")
+        recorder.resume()
+        XCTAssertEqual(recorder.phase, .ready, "resume() while ready must not change phase")
+    }
+
     // MARK: - SequentialClipPlayer
 
     @MainActor

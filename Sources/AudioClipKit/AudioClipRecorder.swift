@@ -14,9 +14,10 @@ import AVFoundation
 @MainActor
 public final class AudioClipRecorder: ObservableObject {
 
-    public enum Phase {
+    public enum Phase: Equatable {
         case ready
         case recording
+        case paused
     }
 
     @Published public private(set) var phase: Phase = .ready
@@ -28,6 +29,10 @@ public final class AudioClipRecorder: ObservableObject {
 
     public var isRecording: Bool {
         if case .recording = phase { return true } else { return false }
+    }
+
+    public var isPaused: Bool {
+        if case .paused = phase { return true } else { return false }
     }
 
     public init(useBluetoothMic: Bool = false) {
@@ -67,6 +72,21 @@ public final class AudioClipRecorder: ObservableObject {
         } catch {
             errorMessage = "Failed to start recording: \(error.localizedDescription)"
         }
+    }
+
+    /// Pause without finalizing — the same file resumes on `resume()`. Lets a
+    /// long recording survive being interrupted partway through.
+    public func pause() {
+        guard case .recording = phase, let recorder else { return }
+        recorder.pause()
+        phase = .paused
+    }
+
+    /// Resume a paused recording, appending to the same file.
+    public func resume() {
+        guard case .paused = phase, let recorder else { return }
+        recorder.record()
+        phase = .recording
     }
 
     /// Stop, normalize, and hand back the finalized clip. `completion` runs on
