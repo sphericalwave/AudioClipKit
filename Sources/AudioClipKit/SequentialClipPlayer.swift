@@ -3,16 +3,21 @@
 //  AudioClipKit
 //
 //  Plays a list of `AudioClip`s in order, one after the next. Deliberately
-//  simpler than MindHeist's queue engine (no shuffle / pan / EQ / gaps) —
-//  sequential walk-through playback is all this needs. Built on AVAudioPlayer:
-//  each clip's finish advances to the next; finishing the last fires
-//  `onFinishedAll` (hosts use this to log a "review").
+//  simpler than MindHeist's queue engine (no shuffle / pan / gaps) —
+//  sequential walk-through playback is all this needs.
+//
+//  Built on AVAudioEngine (not AVAudioPlayer) so playback can be *boosted*
+//  above the source level: `AVAudioPlayer.volume` and `mainMixerNode.volume`
+//  are both capped at 1.0 by iOS, whereas the EQ node's `globalGain` (dB)
+//  supports −96…+24 dB — the same gain stage MindHeist uses. Each clip's
+//  finish advances to the next; finishing the last fires `onFinishedAll`
+//  (hosts use this to log a "review").
 //
 
 import SwiftUI
 import AVFoundation
 
-public final class SequentialClipPlayer: NSObject, ObservableObject, AVAudioPlayerDelegate {
+public final class SequentialClipPlayer: NSObject, ObservableObject {
 
     /// Index of the clip currently playing (or last played). Drives the host's
     /// synced image/name display.
@@ -26,16 +31,59 @@ public final class SequentialClipPlayer: NSObject, ObservableObject, AVAudioPlay
     /// Fired as each clip begins, with its index.
     public var onAdvance: ((Int) -> Void)?
 
+    /// Linear playback gain. 1.0 = unity (source level); values >1 boost louder
+    /// than the recording (routed through the EQ node's `globalGain`). Applied
+    /// live — changing it mid-playback takes effect immediately.
+    public var gain: Float = 1.0 {
+        didSet { boostEQ.globalGain = linearToDB(gain) }
+    }
+
+    // AVAudioEngine pipeline: playerNode → boostEQ (gain stage) → mainMixer.
+    private let engine = AVAudioEngine()
+    private let playerNode = AVAudioPlayerNode()
+    private let boostEQ = AVAudioUnitEQ(numberOfBands: 0)
+
     private var clips: [any AudioClip] = []
-    private var player: AVAudioPlayer?
+    private var currentFile: AVAudioFile?
+    private var currentDuration: Double = 0
     private var progressTimer: Timer?
     private var isPaused = false
+
+    // Bumped whenever the schedule changes (advance / stop). A file-finished
+    // completion callback only advances if its captured token still matches —
+    // this discards the stray callback that `playerNode.stop()` fires when we
+    // tear down or skip to the next clip.
+    private var generation = 0
+
+    // Wall-clock progress tracking across pause/resume (an AVAudioPlayerNode has
+    // no simple currentTime; MindHeist tracks the same way).
+    private var trackStartDate: Date?
+    private var accumulatedSeconds: Double = 0
 
     public var clipCount: Int { clips.count }
 
     public override init() {
         super.init()
+        setupEngine()
         registerInterruptionObserver()
+    }
+
+    private func linearToDB(_ linear: Float) -> Float {
+        linear > 0 ? 20 * log10(linear) : -96
+    }
+
+    private func setupEngine() {
+        engine.attach(playerNode)
+        engine.attach(boostEQ)
+        engine.connect(playerNode, to: boostEQ, format: nil)
+        engine.connect(boostEQ, to: engine.mainMixerNode, format: nil)
+        boostEQ.globalGain = linearToDB(gain)
+    }
+
+    private func startEngine() {
+        guard !engine.isRunning else { return }
+        engine.prepare()
+        try? engine.start()
     }
 
     /// Start playing `clips` from the top. An empty list is a no-op (it does
@@ -45,50 +93,79 @@ public final class SequentialClipPlayer: NSObject, ObservableObject, AVAudioPlay
         self.clips = clips
         guard !clips.isEmpty else { return }
         AudioSessionConfigurator.configureForPlayback()
+        startEngine()
         currentIndex = 0
         startClip(at: 0)
     }
 
     public func pause() {
         guard isPlaying else { return }
-        player?.pause()
+        if let start = trackStartDate {
+            accumulatedSeconds += Date().timeIntervalSince(start)
+            trackStartDate = nil
+        }
+        playerNode.pause()
         isPlaying = false
         isPaused = true
         stopProgressTimer()
     }
 
     public func resume() {
-        guard isPaused, let p = player else { return }
+        guard isPaused, currentFile != nil else { return }
         AudioSessionConfigurator.configureForPlayback()
-        p.play()
+        startEngine()
+        playerNode.play()
         isPlaying = true
         isPaused = false
+        trackStartDate = Date()
         startProgressTimer()
     }
 
     public func stop() {
-        player?.stop()
-        player = nil
+        generation += 1
+        playerNode.stop()
+        if engine.isRunning { engine.stop() }
         stopProgressTimer()
         isPlaying = false
         isPaused = false
         progress = 0
+        currentFile = nil
+        trackStartDate = nil
+        accumulatedSeconds = 0
     }
 
     private func startClip(at index: Int) {
         guard index < clips.count else { finish(); return }
         progress = 0
-        // A clip with no audio yet is skipped rather than stalling the walk.
+        accumulatedSeconds = 0
+        trackStartDate = nil
+
+        // A clip with no audio (or an unreadable/zero-length file) is skipped
+        // rather than stalling the walk.
         guard let url = clips[index].audioURL(),
-              let p = try? AVAudioPlayer(contentsOf: url) else {
+              let file = try? AVAudioFile(forReading: url),
+              file.length > 0 else {
             advance()
             return
         }
-        p.delegate = self
-        player = p
-        p.play()
+
+        generation += 1
+        let token = generation
+        currentFile = file
+        currentDuration = Double(file.length) / file.processingFormat.sampleRate
+
+        startEngine()
+        playerNode.stop()
+        playerNode.scheduleFile(file, at: nil, completionCallbackType: .dataPlayedBack) { [weak self] _ in
+            DispatchQueue.main.async {
+                guard let self, token == self.generation else { return }
+                self.advance()
+            }
+        }
+        playerNode.play()
         isPlaying = true
         isPaused = false
+        trackStartDate = Date()
         onAdvance?(index)
         startProgressTimer()
     }
@@ -111,18 +188,16 @@ public final class SequentialClipPlayer: NSObject, ObservableObject, AVAudioPlay
     private func startProgressTimer() {
         progressTimer?.invalidate()
         progressTimer = Timer.scheduledTimer(withTimeInterval: 0.1, repeats: true) { [weak self] _ in
-            guard let self, let p = self.player, p.duration > 0 else { return }
-            DispatchQueue.main.async { self.progress = p.currentTime / p.duration }
+            guard let self, self.currentDuration > 0, let start = self.trackStartDate else { return }
+            let elapsed = self.accumulatedSeconds + Date().timeIntervalSince(start)
+            let p = min(elapsed / self.currentDuration, 1.0)
+            DispatchQueue.main.async { self.progress = p }
         }
     }
 
     private func stopProgressTimer() {
         progressTimer?.invalidate()
         progressTimer = nil
-    }
-
-    public func audioPlayerDidFinishPlaying(_ player: AVAudioPlayer, successfully flag: Bool) {
-        DispatchQueue.main.async { self.advance() }
     }
 
     // MARK: - Interruptions (calls, Siri, etc.)

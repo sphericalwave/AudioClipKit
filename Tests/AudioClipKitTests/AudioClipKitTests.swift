@@ -82,6 +82,16 @@ final class AudioClipKitTests: XCTestCase {
         XCTAssertEqual(recorder.phase, .ready, "resume() while ready must not change phase")
     }
 
+    // MARK: - AudioSessionConfigurator
+
+    #if os(iOS)
+    func testDuckedPlaybackOptionsDuckAndMix() {
+        let opts = AudioSessionConfigurator.duckedPlaybackOptions
+        XCTAssertTrue(opts.contains(.duckOthers), "ducked playback must lower other apps' audio")
+        XCTAssertTrue(opts.contains(.mixWithOthers), "must mix rather than interrupt")
+    }
+    #endif
+
     // MARK: - SequentialClipPlayer
 
     @MainActor

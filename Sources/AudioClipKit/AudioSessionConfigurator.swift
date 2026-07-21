@@ -32,6 +32,29 @@ public enum AudioSessionConfigurator {
         #endif
     }
 
+    #if os(iOS)
+    /// Option set for ducked playback. Exposed for testing — activation itself
+    /// isn't unit-testable, but the chosen options are the meaningful contract.
+    public static let duckedPlaybackOptions: AVAudioSession.CategoryOptions =
+        [.mixWithOthers, .duckOthers]
+    #endif
+
+    /// Activate a ducking playback session: other apps' audio (Music/Spotify)
+    /// is *lowered* while this session is active instead of paused or plainly
+    /// mixed. Restore other apps to full volume with `deactivate()`, which
+    /// signals `.notifyOthersOnDeactivation`.
+    public static func configureForDuckedPlayback() {
+        #if os(iOS)
+        let s = AVAudioSession.sharedInstance()
+        do {
+            try s.setCategory(.playback, mode: .default, options: duckedPlaybackOptions)
+            try s.setActive(true)
+        } catch {
+            log("configureForDuckedPlayback failed: \(error.localizedDescription)")
+        }
+        #endif
+    }
+
     /// Activate the playback-only session (`.playback`) with mixing.
     /// Use whenever the app is going from idle/recording back into playback.
     public static func configureForPlayback() {
