@@ -16,8 +16,21 @@ public final class ClipPreviewPlayer: NSObject, ObservableObject, AVAudioPlayerD
     private var player: AVAudioPlayer?
     private var loadedID: AnyHashable?
     private var progressTimer: Timer?
+    private let normalizeBeforePlay: Bool
 
-    public override init() { super.init() }
+    /// `normalizeBeforePlay` runs `AudioNormalizer.normalizeRMS` on the clip
+    /// before its first play, so quiet recordings preview at a consistent
+    /// level. Note this rewrites the file at `audioURL()` — hosts backed by a
+    /// temp materialization (blob → temp file) can enable it freely, while
+    /// hosts handing back a URL they own should leave it off.
+    ///
+    /// Defaults to off: silently re-encoding a host's file is not a reasonable
+    /// default. MindHeist enables it to preserve the behavior its own
+    /// `AudioPreviewVm` had.
+    public init(normalizeBeforePlay: Bool = false) {
+        self.normalizeBeforePlay = normalizeBeforePlay
+        super.init()
+    }
 
     /// Toggle playback of `clip`. Resumes if the same clip is already loaded,
     /// otherwise loads and plays from the top.
@@ -37,10 +50,28 @@ public final class ClipPreviewPlayer: NSObject, ObservableObject, AVAudioPlayerD
             return
         }
         guard let url = clip.audioURL() else { return }
+        let id = clip.clipID
+
+        guard normalizeBeforePlay else {
+            startPlaying(url: url, id: id)
+            return
+        }
+        // Normalization decodes and re-encodes the whole file — off the main
+        // thread, then back to start playback.
+        Task.detached(priority: .userInitiated) {
+            do { try AudioNormalizer.normalizeRMS(url: url) }
+            catch { AudioSessionConfigurator.log("preview normalize failed: \(error.localizedDescription)") }
+            await MainActor.run { [weak self] in
+                self?.startPlaying(url: url, id: id)
+            }
+        }
+    }
+
+    private func startPlaying(url: URL, id: AnyHashable) {
         guard let p = try? AVAudioPlayer(contentsOf: url) else { return }
         p.delegate = self
         player = p
-        loadedID = clip.clipID
+        loadedID = id
         progress = 0
         p.play()
         isPlaying = true

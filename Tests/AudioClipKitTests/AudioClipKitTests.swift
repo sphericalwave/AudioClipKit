@@ -32,6 +32,39 @@ final class AudioClipKitTests: XCTestCase {
         return url
     }
 
+    /// Silence → tone → silence, for exercising trim boundaries.
+    private func makeSineFileWithSilence(leadSilence: Double,
+                                         tone: Double,
+                                         trailSilence: Double,
+                                         frequency: Double = 440,
+                                         amplitude: Float = 0.5,
+                                         sampleRate: Double = 44100) throws -> URL {
+        let url = FileManager.default.temporaryDirectory
+            .appendingPathComponent("test_\(UUID().uuidString).m4a")
+        let settings: [String: Any] = [
+            AVFormatIDKey: kAudioFormatMPEG4AAC,
+            AVSampleRateKey: sampleRate,
+            AVNumberOfChannelsKey: 1,
+            AVEncoderAudioQualityKey: AVAudioQuality.high.rawValue
+        ]
+        let file = try AVAudioFile(forWriting: url, settings: settings)
+        let format = file.processingFormat
+        let total = leadSilence + tone + trailSilence
+        let frames = AVAudioFrameCount(total * sampleRate)
+        let buf = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: frames)!
+        buf.frameLength = frames
+        let ch = buf.floatChannelData![0]
+        let toneStart = Int(leadSilence * sampleRate)
+        let toneEnd = Int((leadSilence + tone) * sampleRate)
+        for i in 0..<Int(frames) {
+            ch[i] = (i >= toneStart && i < toneEnd)
+                ? amplitude * sinf(Float(2.0 * .pi * frequency * Double(i) / sampleRate))
+                : 0
+        }
+        try file.write(from: buf)
+        return url
+    }
+
     private struct DummyClip: AudioClip {
         let clipID: AnyHashable
         let url: URL?
@@ -91,6 +124,79 @@ final class AudioClipKitTests: XCTestCase {
         XCTAssertTrue(opts.contains(.mixWithOthers), "must mix rather than interrupt")
     }
     #endif
+
+    // MARK: - AudioTrimmer
+
+    func testDetectSilenceFindsTheLoudRegion() throws {
+        // 0.25s silence, 0.5s tone, 0.25s silence.
+        let url = try makeSineFileWithSilence(leadSilence: 0.25, tone: 0.5, trailSilence: 0.25)
+        defer { try? FileManager.default.removeItem(at: url) }
+
+        let bounds = try AudioTrimmer.detectSilence(url: url)
+        XCTAssertGreaterThan(bounds.startSeconds, 0.1,
+                             "should skip most of the leading silence")
+        XCTAssertLessThan(bounds.startSeconds, 0.3,
+                          "should not eat into the tone")
+        XCTAssertGreaterThan(bounds.endSeconds, 0.6,
+                             "should keep the whole tone")
+        XCTAssertLessThan(bounds.endSeconds, bounds.duration,
+                          "should drop some trailing silence")
+    }
+
+    func testDetectSilenceOnFullySilentFileReturnsFullRange() throws {
+        let url = try makeSineFile(seconds: 0.3, amplitude: 0)
+        defer { try? FileManager.default.removeItem(at: url) }
+        let bounds = try AudioTrimmer.detectSilence(url: url)
+        XCTAssertEqual(bounds.startFrame, 0)
+        XCTAssertEqual(bounds.endFrame, bounds.totalFrames,
+                       "a silent file must trim to the full range, never to nothing")
+    }
+
+    func testTrimShortensTheFile() throws {
+        let url = try makeSineFile(seconds: 1.0)
+        defer { try? FileManager.default.removeItem(at: url) }
+        let before = try AVAudioFile(forReading: url).length
+
+        try AudioTrimmer.trim(url: url, startFrame: 0, endFrame: before / 2)
+
+        let after = try AVAudioFile(forReading: url).length
+        XCTAssertLessThan(after, before)
+        XCTAssertGreaterThan(after, 0, "trimmed file must still be playable")
+    }
+
+    func testTrimIsNoOpForFullRange() throws {
+        let url = try makeSineFile(seconds: 0.4)
+        defer { try? FileManager.default.removeItem(at: url) }
+        let before = try AVAudioFile(forReading: url).length
+
+        try AudioTrimmer.trim(url: url, startFrame: 0, endFrame: before)
+
+        XCTAssertEqual(try AVAudioFile(forReading: url).length, before,
+                       "full-range trim must not re-encode")
+    }
+
+    // MARK: - GapSampler
+
+    func testGapSamplerStaysInRangeAndAvoidsRepeatBuckets() {
+        var lastBucket = -1
+        var buckets: [Int] = []
+        for _ in 0..<200 {
+            let previous = lastBucket
+            let gap = GapSampler.next(lo: 4, hi: 20, lastBucket: &lastBucket)
+            XCTAssertGreaterThanOrEqual(gap, 4)
+            XCTAssertLessThan(gap, 20)
+            XCTAssertNotEqual(lastBucket, previous,
+                              "must not pick the same bucket twice in a row")
+            buckets.append(lastBucket)
+        }
+        XCTAssertEqual(Set(buckets).count, 4, "all four buckets should get used")
+    }
+
+    func testGapSamplerDegenerateRangeReturnsLo() {
+        var lastBucket = -1
+        XCTAssertEqual(GapSampler.next(lo: 7, hi: 7, lastBucket: &lastBucket), 7)
+        XCTAssertEqual(GapSampler.next(lo: 7, hi: 3, lastBucket: &lastBucket), 7)
+    }
 
     // MARK: - SequentialClipPlayer
 
