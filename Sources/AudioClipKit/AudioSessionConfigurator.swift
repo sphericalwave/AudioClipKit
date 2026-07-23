@@ -14,6 +14,22 @@ public enum AudioSessionConfigurator {
     /// Diagnostic sink. Assign to route session logs into a host's logger.
     public static var log: (String) -> Void = { print("[AudioSession] \($0)") }
 
+    /// What the app most recently asked the session to be — recorded by every
+    /// `configureFor…`/`deactivate` call below. `AudioSessionHealthMonitor`
+    /// compares this against the live session to catch drift (a
+    /// media-services reset, an interruption that ended without
+    /// `.shouldResume`, another app permanently repossessing the category)
+    /// that would otherwise silently leave cues unheard or background audio
+    /// stuck ducked/killed.
+    public enum Intent: Equatable {
+        case idle
+        case duckedPlayback
+        case playback
+        case recording(useBluetoothMic: Bool)
+    }
+
+    public private(set) static var currentIntent: Intent = .idle
+
     /// Playback default. `.playback` is the only category that reliably honors
     /// `.mixWithOthers` against the system music apps — `.playAndRecord` claims
     /// the input route on activation and pauses other producers (Spotify,
@@ -44,6 +60,7 @@ public enum AudioSessionConfigurator {
     /// mixed. Restore other apps to full volume with `deactivate()`, which
     /// signals `.notifyOthersOnDeactivation`.
     public static func configureForDuckedPlayback() {
+        currentIntent = .duckedPlayback
         #if os(iOS)
         let s = AVAudioSession.sharedInstance()
         do {
@@ -58,6 +75,7 @@ public enum AudioSessionConfigurator {
     /// Activate the playback-only session (`.playback`) with mixing.
     /// Use whenever the app is going from idle/recording back into playback.
     public static func configureForPlayback() {
+        currentIntent = .playback
         #if os(iOS)
         let s = AVAudioSession.sharedInstance()
         do {
@@ -84,6 +102,7 @@ public enum AudioSessionConfigurator {
     /// Switches to `.ambient` before deactivating so iOS fully releases
     /// session attributes before the deactivation signal reaches other apps.
     public static func deactivate() {
+        currentIntent = .idle
         #if os(iOS)
         let s = AVAudioSession.sharedInstance()
         do {
@@ -142,6 +161,7 @@ public enum AudioSessionConfigurator {
     /// `useBluetoothMic == true` adds `.allowBluetooth` (HFP). Caller must
     /// invoke `endRecordingSession()` afterwards to restore the mix state.
     public static func configureForRecording(useBluetoothMic: Bool) {
+        currentIntent = .recording(useBluetoothMic: useBluetoothMic)
         #if os(iOS)
         let s = AVAudioSession.sharedInstance()
         var opts: AVAudioSession.CategoryOptions = [.defaultToSpeaker, .allowBluetoothA2DP]
@@ -151,6 +171,47 @@ public enum AudioSessionConfigurator {
             try s.setActive(true)
         } catch {
             log("configureForRecording failed: \(error.localizedDescription)")
+        }
+        #endif
+    }
+
+    /// Compares the live session's category/options against `currentIntent`
+    /// and re-applies the intended configuration if they've drifted apart —
+    /// iOS gives no notification for every way this can happen (a media
+    /// services reset fires one, but another app just repossessing the
+    /// category via its own `setCategory` doesn't). No-op while `currentIntent
+    /// == .idle`; there's nothing to enforce when the app doesn't currently
+    /// need the session for anything.
+    ///
+    /// Called periodically by `AudioSessionHealthMonitor` while foregrounded —
+    /// not meant to be polled manually.
+    public static func verifyAndCorrect() {
+        #if os(iOS)
+        let expected: (category: AVAudioSession.Category, options: AVAudioSession.CategoryOptions)
+        switch currentIntent {
+        case .idle:
+            return
+        case .duckedPlayback:
+            expected = (.playback, duckedPlaybackOptions)
+        case .playback:
+            expected = (.playback, [.mixWithOthers])
+        case .recording(let useBluetoothMic):
+            var opts: AVAudioSession.CategoryOptions = [.defaultToSpeaker, .allowBluetoothA2DP]
+            if useBluetoothMic { opts.insert(.allowBluetooth) }
+            expected = (.playAndRecord, opts)
+        }
+
+        let s = AVAudioSession.sharedInstance()
+        guard s.category != expected.category || !s.categoryOptions.contains(expected.options) else { return }
+
+        log("verifyAndCorrect: session drifted (cat=\(s.category.rawValue) opts=\(s.categoryOptions.rawValue)), "
+            + "expected cat=\(expected.category.rawValue) opts=\(expected.options.rawValue) for intent=\(currentIntent) — reapplying")
+
+        switch currentIntent {
+        case .idle: break
+        case .duckedPlayback: configureForDuckedPlayback()
+        case .playback: configureForPlayback()
+        case .recording(let useBluetoothMic): configureForRecording(useBluetoothMic: useBluetoothMic)
         }
         #endif
     }
