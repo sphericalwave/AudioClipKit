@@ -99,6 +99,33 @@ public enum AudioSessionConfigurator {
         #endif
     }
 
+    /// Widen the IO buffer to cut render-callback frequency during a known
+    /// silent window (e.g. a gap between tracks) — trades a bit of latency
+    /// for far fewer real-time-thread wakeups while nothing is rendering.
+    /// Returns the previous `ioBufferDuration` so the caller can restore it
+    /// before real audio needs to start.
+    public static func widenIOBufferForGap(seconds: TimeInterval = 0.5) -> TimeInterval {
+        #if os(iOS)
+        let s = AVAudioSession.sharedInstance()
+        let previous = s.ioBufferDuration
+        do { try s.setPreferredIOBufferDuration(seconds) }
+        catch { log("widenIOBufferForGap failed: \(error.localizedDescription)") }
+        return previous
+        #else
+        return 0
+        #endif
+    }
+
+    /// Restore an `ioBufferDuration` captured from `widenIOBufferForGap`.
+    /// No-op if `seconds` is 0 (i.e. the buffer was never widened).
+    public static func restoreIOBufferDuration(_ seconds: TimeInterval) {
+        #if os(iOS)
+        guard seconds > 0 else { return }
+        do { try AVAudioSession.sharedInstance().setPreferredIOBufferDuration(seconds) }
+        catch { log("restoreIOBufferDuration failed: \(error.localizedDescription)") }
+        #endif
+    }
+
     /// Call when AVAudioRecorder stops. Briefly deactivates the session with
     /// `.notifyOthersOnDeactivation` so background music apps receive the
     /// interruption-ended signal and resume, then re-arms the mix-friendly
