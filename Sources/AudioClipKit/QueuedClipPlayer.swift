@@ -51,7 +51,7 @@ public final class QueuedClipPlayer<Clip: AudioClip>: ObservableObject {
     private let progressTracker = PlaybackProgressTracker()
     private let sessionObserver = PlaybackSessionObserver()
 
-    private let allClips: [Clip]
+    private var allClips: [Clip]
     private var stack: [Clip]
     private let isRepeating: Bool
     private let randomMode: Bool
@@ -155,6 +155,16 @@ public final class QueuedClipPlayer<Clip: AudioClip>: ObservableObject {
     /// the host deletes the underlying record out from under a running queue.
     public func removeFromQueue(where predicate: (Clip) -> Bool) {
         stack.removeAll(where: predicate)
+    }
+
+    /// Adds `clip` to both the persistent pool and the currently running
+    /// queue, so it's eligible for the next pick immediately rather than
+    /// waiting for the pool to next reshuffle — e.g. when the host records a
+    /// new clip while a session is already playing.
+    public func addToQueue(_ clip: Clip) {
+        allClips.append(clip)
+        let index = randomMode ? Int.random(in: 0...stack.count) : stack.count
+        stack.insert(clip, at: index)
     }
 
     /// Combined player + engine state, for a host's diagnostic log.

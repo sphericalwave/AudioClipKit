@@ -241,6 +241,41 @@ final class AudioClipKitTests: XCTestCase {
         XCTAssertEqual(GapSampler.next(lo: 7, hi: 3, lastBucket: &lastBucket), 7)
     }
 
+    // MARK: - QueuedClipPlayer
+
+    /// A clip added mid-session must be picked before the pool's next
+    /// reshuffle, not just appended for some future cycle.
+    @MainActor
+    func testAddToQueuePicksNewClipBeforeNextReshuffle() throws {
+        let urlA = try makeSineFile(seconds: 0.2)
+        let urlB = try makeSineFile(seconds: 0.2)
+        defer {
+            try? FileManager.default.removeItem(at: urlA)
+            try? FileManager.default.removeItem(at: urlB)
+        }
+        let clipA = DummyClip(clipID: "A", url: urlA)
+        let clipB = DummyClip(clipID: "B", url: urlB)
+
+        let player = QueuedClipPlayer(clips: [clipA], delay: 0.05, isRepeating: true, randomMode: true)
+        var finishedIDs: [AnyHashable] = []
+        let exp = expectation(description: "second clip finished")
+        player.onClipFinished = { clip in
+            finishedIDs.append(clip.clipID)
+            if finishedIDs.count == 2 { exp.fulfill() }
+        }
+
+        player.play()
+        // By the time play() returns, clip A has already been dequeued from
+        // the (single-item) stack, leaving it empty — addToQueue here must
+        // land in that live stack, not just the pool for a future reshuffle.
+        player.addToQueue(clipB)
+
+        wait(for: [exp], timeout: 5)
+        player.stop()
+
+        XCTAssertEqual(finishedIDs, ["A", "B"], "clip added mid-session must play immediately after the current clip, before any reshuffle")
+    }
+
     // MARK: - SequentialClipPlayer
 
     @MainActor
