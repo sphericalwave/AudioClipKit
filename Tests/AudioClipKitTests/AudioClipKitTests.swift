@@ -123,6 +123,49 @@ final class AudioClipKitTests: XCTestCase {
         XCTAssertTrue(opts.contains(.duckOthers), "ducked playback must lower other apps' audio")
         XCTAssertTrue(opts.contains(.mixWithOthers), "must mix rather than interrupt")
     }
+
+    func testConfigureForPlaybackSetsExpectedCategory() {
+        AudioSessionConfigurator.configureForPlayback()
+        let s = AVAudioSession.sharedInstance()
+        XCTAssertEqual(s.category, .playback)
+        XCTAssertTrue(s.categoryOptions.contains(.mixWithOthers))
+    }
+
+    func testVerifyAndCorrectReappliesDriftedPlaybackCategory() throws {
+        AudioSessionConfigurator.configureForPlayback()
+        // Simulate external drift: something else repossessed the category.
+        try AVAudioSession.sharedInstance().setCategory(.ambient)
+        XCTAssertEqual(AVAudioSession.sharedInstance().category, .ambient)
+
+        AudioSessionConfigurator.verifyAndCorrect()
+
+        let s = AVAudioSession.sharedInstance()
+        XCTAssertEqual(s.category, .playback, "verifyAndCorrect must restore the intended category")
+        XCTAssertTrue(s.categoryOptions.contains(.mixWithOthers))
+    }
+
+    func testVerifyAndCorrectReappliesDriftedDuckedPlaybackOptions() throws {
+        AudioSessionConfigurator.configureForDuckedPlayback()
+        // Drop back to plain mixing, losing the duck option.
+        try AVAudioSession.sharedInstance().setCategory(.playback, options: [.mixWithOthers])
+        XCTAssertFalse(AVAudioSession.sharedInstance().categoryOptions.contains(.duckOthers))
+
+        AudioSessionConfigurator.verifyAndCorrect()
+
+        let opts = AVAudioSession.sharedInstance().categoryOptions
+        XCTAssertTrue(opts.contains(.duckOthers), "verifyAndCorrect must restore ducking for a ducked-playback intent")
+        XCTAssertTrue(opts.contains(.mixWithOthers))
+    }
+
+    func testVerifyAndCorrectIsNoOpWhenIdle() throws {
+        AudioSessionConfigurator.deactivate() // currentIntent -> .idle
+        try AVAudioSession.sharedInstance().setCategory(.ambient)
+
+        AudioSessionConfigurator.verifyAndCorrect()
+
+        XCTAssertEqual(AVAudioSession.sharedInstance().category, .ambient,
+                       "idle intent has nothing to enforce; verifyAndCorrect must not touch the session")
+    }
     #endif
 
     // MARK: - AudioTrimmer
