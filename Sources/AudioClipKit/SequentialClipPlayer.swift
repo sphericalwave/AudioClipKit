@@ -25,6 +25,9 @@ public final class SequentialClipPlayer: NSObject, ObservableObject {
     @Published public private(set) var isPlaying = false
     /// Progress (0...1) within the current clip.
     @Published public private(set) var progress: Double = 0
+    /// When the current clip is estimated to finish — nil while paused/stopped.
+    /// Drives a host's "time remaining" countdown display.
+    @Published public private(set) var estimatedEndDate: Date?
 
     /// Fired once when the whole sequence plays to the end.
     public var onFinishedAll: (() -> Void)?
@@ -107,6 +110,7 @@ public final class SequentialClipPlayer: NSObject, ObservableObject {
         playerNode.pause()
         isPlaying = false
         isPaused = true
+        estimatedEndDate = nil
         stopProgressTimer()
     }
 
@@ -118,6 +122,7 @@ public final class SequentialClipPlayer: NSObject, ObservableObject {
         isPlaying = true
         isPaused = false
         trackStartDate = Date()
+        estimatedEndDate = trackStartDate!.addingTimeInterval(currentDuration - accumulatedSeconds)
         startProgressTimer()
     }
 
@@ -132,6 +137,7 @@ public final class SequentialClipPlayer: NSObject, ObservableObject {
         currentFile = nil
         trackStartDate = nil
         accumulatedSeconds = 0
+        estimatedEndDate = nil
     }
 
     private func startClip(at index: Int) {
@@ -166,6 +172,7 @@ public final class SequentialClipPlayer: NSObject, ObservableObject {
         isPlaying = true
         isPaused = false
         trackStartDate = Date()
+        estimatedEndDate = trackStartDate!.addingTimeInterval(currentDuration)
         onAdvance?(index)
         startProgressTimer()
     }

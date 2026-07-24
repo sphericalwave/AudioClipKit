@@ -11,8 +11,10 @@ public struct MiniPlayerBar: View {
     private let subtitle: String?
     private let progress: Double
     private let isPlaying: Bool
+    /// A future date to count down to (e.g. when a gap ends, or when the
+    /// current track will finish) — nil hides the countdown entirely.
+    private let countdownTarget: Date?
     private let onTogglePlayPause: () -> Void
-    private let onStop: () -> Void
     private let onTap: () -> Void
 
     public init(
@@ -20,16 +22,16 @@ public struct MiniPlayerBar: View {
         subtitle: String? = nil,
         progress: Double,
         isPlaying: Bool,
+        countdownTarget: Date? = nil,
         onTogglePlayPause: @escaping () -> Void,
-        onStop: @escaping () -> Void,
         onTap: @escaping () -> Void
     ) {
         self.title = title
         self.subtitle = subtitle
         self.progress = progress
         self.isPlaying = isPlaying
+        self.countdownTarget = countdownTarget
         self.onTogglePlayPause = onTogglePlayPause
-        self.onStop = onStop
         self.onTap = onTap
     }
 
@@ -52,17 +54,13 @@ public struct MiniPlayerBar: View {
 
                 Spacer()
 
+                if let countdownTarget {
+                    MiniPlayerCountdown(target: countdownTarget)
+                }
+
                 Button(action: onTogglePlayPause) {
                     Image(systemName: isPlaying ? "pause.fill" : "play.fill")
                         .font(.title3)
-                        .frame(width: 32, height: 32)
-                }
-                .buttonStyle(.borderless)
-
-                Button(action: onStop) {
-                    Image(systemName: "xmark")
-                        .font(.body.weight(.semibold))
-                        .foregroundStyle(.secondary)
                         .frame(width: 32, height: 32)
                 }
                 .buttonStyle(.borderless)
@@ -73,5 +71,19 @@ public struct MiniPlayerBar: View {
         .background(.regularMaterial)
         .contentShape(Rectangle())
         .onTapGesture(perform: onTap)
+    }
+}
+
+/// Isolated countdown display — owns the TimelineView so 1-second ticks
+/// don't invalidate the whole bar (title/progress keep updating independently).
+private struct MiniPlayerCountdown: View {
+    let target: Date
+    var body: some View {
+        TimelineView(.periodic(from: .now, by: 1.0)) { ctx in
+            let seconds = max(0, Int(target.timeIntervalSince(ctx.date).rounded(.up)))
+            Text("\(seconds)s")
+                .font(.footnote.monospacedDigit())
+                .foregroundStyle(.secondary)
+        }
     }
 }
