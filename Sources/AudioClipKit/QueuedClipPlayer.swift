@@ -242,6 +242,11 @@ public final class QueuedClipPlayer<Clip: AudioClip>: ObservableObject {
             chain.start(onError: { [weak self] e in self?.log("[engine] start failed: \(e)") })
             let beginPlayback: () -> Void = { [weak self] in
                 guard let self else { return }
+                // The warm-up wait can span a route negotiation (e.g.
+                // Bluetooth A2DP) long/disruptive enough that the engine
+                // auto-stops itself in the meantime — re-verify right at the
+                // play call instead of trusting the state from above.
+                self.chain.start(onError: { e in self.log("[engine] restart before play failed: \(e)") })
                 self.applyNextPan()
                 self.chain.playerNode.scheduleFile(file, at: nil, completionCallbackType: .dataPlayedBack) { [weak self] _ in
                     DispatchQueue.main.async { self?.clipDidFinishPlaying() }
