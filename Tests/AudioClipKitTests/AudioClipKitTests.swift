@@ -364,6 +364,28 @@ final class AudioClipKitTests: XCTestCase {
     }
     #endif
 
+    /// The inter-clip gap is filled with an actually-rendered silence buffer
+    /// (so the player node never goes idle and iOS keeps the background-audio
+    /// assertion alive across the gap — a silent hole got the app suspended
+    /// mid-gap on-device). The buffer must be exactly gap-length so gap timing
+    /// is preserved, and truly silent so the gap isn't audible noise.
+    func testGapSilenceBufferIsCorrectLengthAndSilent() throws {
+        let format = try XCTUnwrap(AVAudioFormat(standardFormatWithSampleRate: 44100, channels: 2))
+        let buf = try XCTUnwrap(QueuedClipPlayer<DummyClip>.makeSilenceBuffer(seconds: 2.0, format: format))
+
+        XCTAssertEqual(Int(buf.frameLength), 88200,
+                       "silence must be exactly gap*sampleRate frames or the gap length drifts")
+
+        let ch = try XCTUnwrap(buf.floatChannelData)
+        var maxSample: Float = 0
+        for c in 0..<Int(format.channelCount) {
+            for i in 0..<Int(buf.frameLength) {
+                maxSample = max(maxSample, abs(ch[c][i]))
+            }
+        }
+        XCTAssertEqual(maxSample, 0, "gap must be true silence, not uninitialized noise")
+    }
+
     // MARK: - SequentialClipPlayer
 
     @MainActor

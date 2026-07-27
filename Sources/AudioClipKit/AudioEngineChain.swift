@@ -50,14 +50,4 @@ final class AudioEngineChain {
         engine.reset()
         setup()
     }
-
-    /// Converts a delay in seconds to an `AVAudioTime` anchored to the
-    /// current host clock — used to schedule node playback at a future time.
-    func audioTime(secondsFromNow delay: Double) -> AVAudioTime {
-        var info = mach_timebase_info()
-        mach_timebase_info(&info)
-        let nanos = UInt64(delay * 1_000_000_000)
-        let ticks = nanos * UInt64(info.denom) / UInt64(info.numer)
-        return AVAudioTime(hostTime: mach_absolute_time() + ticks)
-    }
 }

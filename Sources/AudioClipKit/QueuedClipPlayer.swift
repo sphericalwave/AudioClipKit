@@ -290,10 +290,16 @@ public final class QueuedClipPlayer<Clip: AudioClip>: ObservableObject {
         let fireAt = Date().addingTimeInterval(gap)
         log("gap scheduled: gap=\(gap)s")
 
-        // Audio-driven gap: schedule the next clip at a future audio-clock
-        // time. The engine keeps the session alive across the gap and the
-        // audio IO thread fires playback precisely — survives app suspension
-        // better than a main-queue timer.
+        // Audio-driven gap: render actual silence for the gap, then the next
+        // clip, back-to-back on the player node — so the node never goes idle.
+        // A previous approach scheduled the next clip at a future audio-clock
+        // time, leaving a silent hole; iOS suspends a backgrounded app whose
+        // audio output is idle even when the engine reports "running" and the
+        // node "playing" (observed on-device: backgrounded mid-gap, the
+        // process was suspended and the future-scheduled clip never fired,
+        // killing playback until the app was reopened). Continuously
+        // scheduled silence keeps the background-audio assertion alive across
+        // the gap; the real clip is queued right behind it.
         if let nextClip = consumeNextPlayable(), let url = nextClip.audioURL() {
             do {
                 let nextFile = try AVAudioFile(forReading: url)
@@ -311,7 +317,11 @@ public final class QueuedClipPlayer<Clip: AudioClip>: ObservableObject {
                 progressTracker.prepareDuration(nextDuration)
 
                 applyNextPan()
-                chain.playerNode.scheduleFile(nextFile, at: chain.audioTime(secondsFromNow: gap),
+                if let silence = Self.makeSilenceBuffer(seconds: gap,
+                                                        format: chain.playerNode.outputFormat(forBus: 0)) {
+                    chain.playerNode.scheduleBuffer(silence, completionHandler: nil)
+                }
+                chain.playerNode.scheduleFile(nextFile, at: nil,
                                         completionCallbackType: .dataPlayedBack) { [weak self] _ in
                     DispatchQueue.main.async { self?.clipDidFinishPlaying() }
                 }
@@ -337,6 +347,27 @@ public final class QueuedClipPlayer<Clip: AudioClip>: ObservableObject {
         }
         nextTrackAt = fireAt
         gapWaiting = true
+    }
+
+    // MARK: - Gap silence
+
+    /// A zero-filled (silent) PCM buffer `seconds` long in `format`, used to
+    /// fill an inter-clip gap with actually-rendered silence so the player
+    /// node stays active and iOS keeps the background-audio assertion alive.
+    /// Length is exactly `seconds * sampleRate` frames so the gap timing is
+    /// unchanged from the old future-schedule approach.
+    static func makeSilenceBuffer(seconds: Double, format: AVAudioFormat) -> AVAudioPCMBuffer? {
+        let frames = AVAudioFrameCount(max(1, (seconds * format.sampleRate).rounded()))
+        guard let buffer = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: frames) else { return nil }
+        buffer.frameLength = frames
+        // AVAudioPCMBuffer's backing memory isn't guaranteed zeroed — a
+        // non-zero gap would render as audible noise. Zero every channel.
+        if let ch = buffer.floatChannelData {
+            for c in 0..<Int(format.channelCount) {
+                memset(ch[c], 0, Int(frames) * MemoryLayout<Float>.size)
+            }
+        }
+        return buffer
     }
 
     // MARK: - Pan
