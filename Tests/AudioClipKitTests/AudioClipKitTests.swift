@@ -307,6 +307,63 @@ final class AudioClipKitTests: XCTestCase {
             "cold engine start must delay the first playback so the just-activated audio route can settle")
     }
 
+    #if os(iOS)
+    /// Regression test for a real-device report: playback looked completely
+    /// normal in the foreground but went silent the instant the app was
+    /// backgrounded. Root cause — a host that deactivates the session on
+    /// every pause (to let other apps un-duck, as MindHeist does) drops the
+    /// category to `.ambient`; the interruption-ended auto-resume path only
+    /// called `reactivate()` (re-activate whatever category is already set)
+    /// instead of re-applying `.playback`, unlike the manual-resume path.
+    /// `.ambient` has no background-audio entitlement, so nothing looked
+    /// wrong until the app actually backgrounded.
+    @MainActor
+    func testInterruptionEndedRestoresPlaybackCategory() throws {
+        let url = try makeSineFile(seconds: 2.0)
+        defer { try? FileManager.default.removeItem(at: url) }
+        let clip = DummyClip(clipID: "interruption", url: url)
+
+        AudioSessionConfigurator.configureForPlayback()
+        let player = QueuedClipPlayer(clips: [clip], delay: 0.05, isRepeating: false, randomMode: false)
+        player.play()
+
+        func pumpMainQueue() {
+            let exp = expectation(description: "pump")
+            DispatchQueue.main.async { exp.fulfill() }
+            wait(for: [exp], timeout: 1)
+        }
+
+        NotificationCenter.default.post(
+            name: AVAudioSession.interruptionNotification,
+            object: nil,
+            userInfo: [AVAudioSessionInterruptionTypeKey: AVAudioSession.InterruptionType.began.rawValue]
+        )
+        pumpMainQueue() // let onInterruptionBegan's async pause() land
+
+        // Mirrors what the host app does on any pause (MainTableVm
+        // deactivates the session so other apps un-duck) — that reaction
+        // lives at the app layer, outside this package, so it's exercised
+        // directly here.
+        AudioSessionConfigurator.deactivate()
+        XCTAssertEqual(AVAudioSession.sharedInstance().category, .ambient)
+
+        NotificationCenter.default.post(
+            name: AVAudioSession.interruptionNotification,
+            object: nil,
+            userInfo: [
+                AVAudioSessionInterruptionTypeKey: AVAudioSession.InterruptionType.ended.rawValue,
+                AVAudioSessionInterruptionOptionKey: AVAudioSession.InterruptionOptions.shouldResume.rawValue,
+            ]
+        )
+        pumpMainQueue()
+
+        XCTAssertEqual(AVAudioSession.sharedInstance().category, .playback,
+            "interruption-ended auto-resume must restore the playback category, not just reactivate whatever category is currently set, or background playback silently breaks")
+
+        player.stop()
+    }
+    #endif
+
     // MARK: - SequentialClipPlayer
 
     @MainActor

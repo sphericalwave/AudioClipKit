@@ -401,7 +401,14 @@ public final class QueuedClipPlayer<Clip: AudioClip>: ObservableObject {
             DispatchQueue.main.async { self?.pause() }
         }
         sessionObserver.onInterruptionEndedShouldResume = { [weak self] in
-            AudioSessionConfigurator.reactivate()
+            // Not just reactivate() — a host that deactivates the session on
+            // every pause (to let other apps un-duck) leaves the category at
+            // whatever deactivate() set (e.g. `.ambient`), which has no
+            // background-audio entitlement. Re-apply the playback category
+            // itself, exactly like the manual-resume path does, or playback
+            // looks fine in the foreground and then silently drops the
+            // instant the app backgrounds.
+            AudioSessionConfigurator.configureForPlayback()
             DispatchQueue.main.async { self?.resume() }
         }
         sessionObserver.onMediaServicesReset = { [weak self] in
