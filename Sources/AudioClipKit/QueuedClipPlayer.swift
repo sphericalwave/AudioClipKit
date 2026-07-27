@@ -96,7 +96,8 @@ public final class QueuedClipPlayer<Clip: AudioClip>: ObservableObject {
     // MARK: - Transport
 
     public func play() {
-        chain.start(onError: { [weak self] e in self?.log("[engine] start failed: \(e)") })
+        // Don't start the engine here — playClip() does it and needs to see
+        // engine.isRunning still false to detect a cold start.
         playNextValid()
         isPlaying = true
     }
@@ -230,14 +231,31 @@ public final class QueuedClipPlayer<Clip: AudioClip>: ObservableObject {
             }
             currentFile = file
             currentDuration = duration
+            // A fresh (or just-fully-stopped) engine means the audio session
+            // was just activated too — the very first render right after
+            // activation can be silent or cut out after a fraction of a
+            // second because the output route hasn't finished settling yet
+            // (only a manual pause/resume "fixed" it before this). Give a
+            // cold start a brief beat before pushing real audio; an
+            // already-running engine (mid-session track-to-track) skips it.
+            let coldStart = !chain.engine.isRunning
             chain.start(onError: { [weak self] e in self?.log("[engine] start failed: \(e)") })
-            applyNextPan()
-            chain.playerNode.scheduleFile(file, at: nil, completionCallbackType: .dataPlayedBack) { [weak self] _ in
-                DispatchQueue.main.async { self?.clipDidFinishPlaying() }
+            let beginPlayback: () -> Void = { [weak self] in
+                guard let self else { return }
+                self.applyNextPan()
+                self.chain.playerNode.scheduleFile(file, at: nil, completionCallbackType: .dataPlayedBack) { [weak self] _ in
+                    DispatchQueue.main.async { self?.clipDidFinishPlaying() }
+                }
+                self.chain.playerNode.play()
+                self.progressTracker.beginTrack(duration: duration)
+                self.startProgressTimer()
             }
-            chain.playerNode.play()
-            progressTracker.beginTrack(duration: duration)
-            startProgressTimer()
+            if coldStart {
+                log("cold engine start — delaying first playback to let route settle")
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.2, execute: beginPlayback)
+            } else {
+                beginPlayback()
+            }
         } catch {
             log("AVAudioFile init failed (\(url.lastPathComponent)): \(error.localizedDescription)")
             playNextValid()

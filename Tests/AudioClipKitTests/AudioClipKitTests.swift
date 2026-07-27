@@ -276,6 +276,37 @@ final class AudioClipKitTests: XCTestCase {
         XCTAssertEqual(finishedIDs, ["A", "B"], "clip added mid-session must play immediately after the current clip, before any reshuffle")
     }
 
+    /// Regression test: a fresh engine's very first render can race a
+    /// just-activated audio session's route settling, playing silently or
+    /// cutting out after a fraction of a second (only fixed before by a
+    /// manual pause/resume). `playClip` guards this by delaying the first
+    /// schedule+play on a cold engine start. Assert the delay actually
+    /// happens — a fast finish means the guard regressed.
+    @MainActor
+    func testColdStartDelaysFirstPlayback() throws {
+        let url = try makeSineFile(seconds: 0.05)
+        defer { try? FileManager.default.removeItem(at: url) }
+        let clip = DummyClip(clipID: "cold", url: url)
+
+        let player = QueuedClipPlayer(clips: [clip], delay: 0.05, isRepeating: false, randomMode: false)
+        let exp = expectation(description: "first clip finished")
+        var finishedAt: Date?
+        player.onClipFinished = { _ in
+            finishedAt = Date()
+            exp.fulfill()
+        }
+
+        let startedAt = Date()
+        player.play()
+
+        wait(for: [exp], timeout: 3)
+        player.stop()
+
+        let elapsed = try XCTUnwrap(finishedAt).timeIntervalSince(startedAt)
+        XCTAssertGreaterThanOrEqual(elapsed, 0.2,
+            "cold engine start must delay the first playback so the just-activated audio route can settle")
+    }
+
     // MARK: - SequentialClipPlayer
 
     @MainActor
