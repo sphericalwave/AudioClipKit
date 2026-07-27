@@ -420,9 +420,23 @@ public final class QueuedClipPlayer<Clip: AudioClip>: ObservableObject {
                 DispatchQueue.main.async { self.playNextValid() }
             }
         }
-        sessionObserver.onDidEnterBackground = { [weak self] in self?.stopProgressTimer() }
+        sessionObserver.onDidEnterBackground = { [weak self] in
+            guard let self else { return }
+            // Snapshot player + gap state at the exact background transition:
+            // if audio dies on backgrounding, this shows whether we went
+            // background mid-clip (node.playing, no nextTrackAt) or mid-gap
+            // (gapWaiting, nextTrackAt set — only silence scheduled ahead,
+            // which iOS may not treat as active audio).
+            self.log("didEnterBackground \(self.diagnosticDescription)")
+            self.stopProgressTimer()
+        }
         sessionObserver.onWillEnterForeground = { [weak self] in
-            if self?.isPlaying == true { self?.startProgressTimer() }
+            guard let self else { return }
+            // Pair with the background snapshot: compare state here to catch
+            // audio silently dropped while suspended (e.g. engine.running or
+            // node.playing flipped false across the background window).
+            self.log("willEnterForeground \(self.diagnosticDescription)")
+            if self.isPlaying { self.startProgressTimer() }
         }
     }
 }
