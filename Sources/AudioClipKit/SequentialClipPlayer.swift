@@ -16,6 +16,9 @@
 
 import SwiftUI
 import AVFoundation
+#if os(iOS)
+import UIKit
+#endif
 
 public final class SequentialClipPlayer: NSObject, ObservableObject {
 
@@ -33,6 +36,17 @@ public final class SequentialClipPlayer: NSObject, ObservableObject {
     public var onFinishedAll: (() -> Void)?
     /// Fired as each clip begins, with its index.
     public var onAdvance: ((Int) -> Void)?
+    /// Diagnostic sink. Assign to route logs into a host's logger.
+    public var log: (String) -> Void = { _ in }
+
+    /// Player + engine state, for a host's diagnostic log. Mirrors
+    /// `QueuedClipPlayer.diagnosticDescription` so background-playback issues
+    /// read the same across both engines.
+    public var diagnosticDescription: String {
+        "isPlaying=\(isPlaying) isPaused=\(isPaused) engine.running=\(engine.isRunning) "
+            + "node.playing=\(playerNode.isPlaying) index=\(currentIndex)/\(clips.count) "
+            + "currentDuration=\(currentDuration)"
+    }
 
     /// Linear playback gain. 1.0 = unity (source level); values >1 boost louder
     /// than the recording (routed through the EQ node's `globalGain`). Applied
@@ -69,6 +83,7 @@ public final class SequentialClipPlayer: NSObject, ObservableObject {
         super.init()
         setupEngine()
         registerInterruptionObserver()
+        registerLifecycleObservers()
     }
 
     private func linearToDB(_ linear: Float) -> Float {
@@ -226,15 +241,45 @@ public final class SequentialClipPlayer: NSObject, ObservableObject {
               let type = AVAudioSession.InterruptionType(rawValue: raw) else { return }
         switch type {
         case .began:
+            log("interruption began \(diagnosticDescription)")
             pause()
         case .ended:
             let optsRaw = note.userInfo?[AVAudioSessionInterruptionOptionKey] as? UInt ?? 0
-            if AVAudioSession.InterruptionOptions(rawValue: optsRaw).contains(.shouldResume) {
+            let opts = AVAudioSession.InterruptionOptions(rawValue: optsRaw)
+            log("interruption ended shouldResume=\(opts.contains(.shouldResume)) \(diagnosticDescription)")
+            if opts.contains(.shouldResume) {
                 resume()
             }
         @unknown default:
             break
         }
+    }
+    #endif
+
+    // MARK: - App lifecycle (background/foreground diagnostics)
+
+    private func registerLifecycleObservers() {
+        #if os(iOS)
+        let nc = NotificationCenter.default
+        nc.addObserver(self, selector: #selector(handleDidEnterBackground),
+                       name: UIApplication.didEnterBackgroundNotification, object: nil)
+        nc.addObserver(self, selector: #selector(handleWillEnterForeground),
+                       name: UIApplication.willEnterForegroundNotification, object: nil)
+        #endif
+    }
+
+    #if os(iOS)
+    // Snapshot player + engine state at each transition. If audio dies on
+    // backgrounding, compare these two lines: engine.running/node.playing
+    // flipping false across the window means the stream was torn down while
+    // suspended; a preceding "interruption began" line instead means the
+    // interruption handler paused it.
+    @objc private func handleDidEnterBackground() {
+        log("didEnterBackground \(diagnosticDescription)")
+    }
+
+    @objc private func handleWillEnterForeground() {
+        log("willEnterForeground \(diagnosticDescription)")
     }
     #endif
 }
