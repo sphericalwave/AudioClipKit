@@ -55,6 +55,10 @@ public final class SequentialClipPlayer: NSObject, ObservableObject {
         didSet { boostEQ.globalGain = linearToDB(gain) }
     }
 
+    /// Silence inserted between clips. 0 = no gap (default). Takes effect on
+    /// the next advance to a new clip.
+    public var gapSeconds: Double = 0
+
     // AVAudioEngine pipeline: playerNode → boostEQ (gain stage) → mainMixer.
     private let engine = AVAudioEngine()
     private let playerNode = AVAudioPlayerNode()
@@ -65,6 +69,13 @@ public final class SequentialClipPlayer: NSObject, ObservableObject {
     private var currentDuration: Double = 0
     private var progressTimer: Timer?
     private var isPaused = false
+
+    // Silent-gap state between clips. `pendingIndex` is non-nil only while
+    // waiting out a gap before `startClip(at:)` for that index.
+    private var gapTimer: Timer?
+    private var pendingIndex: Int?
+    private var gapStartDate: Date?
+    private var gapAccumulated: Double = 0
 
     // Bumped whenever the schedule changes (advance / stop). A file-finished
     // completion callback only advances if its captured token still matches —
@@ -118,7 +129,14 @@ public final class SequentialClipPlayer: NSObject, ObservableObject {
 
     public func pause() {
         guard isPlaying else { return }
-        if let start = trackStartDate {
+        if pendingIndex != nil {
+            gapTimer?.invalidate()
+            gapTimer = nil
+            if let start = gapStartDate {
+                gapAccumulated += Date().timeIntervalSince(start)
+                gapStartDate = nil
+            }
+        } else if let start = trackStartDate {
             accumulatedSeconds += Date().timeIntervalSince(start)
             trackStartDate = nil
         }
@@ -130,7 +148,17 @@ public final class SequentialClipPlayer: NSObject, ObservableObject {
     }
 
     public func resume() {
-        guard isPaused, currentFile != nil else { return }
+        guard isPaused else { return }
+        if let index = pendingIndex {
+            isPlaying = true
+            isPaused = false
+            let remaining = max(gapSeconds - gapAccumulated, 0)
+            gapStartDate = Date()
+            estimatedEndDate = gapStartDate!.addingTimeInterval(remaining)
+            scheduleGapTimer(remaining: remaining, index: index)
+            return
+        }
+        guard currentFile != nil else { return }
         AudioSessionConfigurator.configureForPlayback()
         startEngine()
         playerNode.play()
@@ -146,6 +174,11 @@ public final class SequentialClipPlayer: NSObject, ObservableObject {
         playerNode.stop()
         if engine.isRunning { engine.stop() }
         stopProgressTimer()
+        gapTimer?.invalidate()
+        gapTimer = nil
+        pendingIndex = nil
+        gapStartDate = nil
+        gapAccumulated = 0
         isPlaying = false
         isPaused = false
         progress = 0
@@ -196,9 +229,32 @@ public final class SequentialClipPlayer: NSObject, ObservableObject {
         let next = currentIndex + 1
         if next < clips.count {
             currentIndex = next
-            startClip(at: next)
+            beginGap(before: next)
         } else {
             finish()
+        }
+    }
+
+    private func beginGap(before index: Int) {
+        guard gapSeconds > 0 else { startClip(at: index); return }
+        progress = 0
+        stopProgressTimer()
+        pendingIndex = index
+        gapAccumulated = 0
+        gapStartDate = Date()
+        estimatedEndDate = gapStartDate!.addingTimeInterval(gapSeconds)
+        scheduleGapTimer(remaining: gapSeconds, index: index)
+    }
+
+    private func scheduleGapTimer(remaining: Double, index: Int) {
+        let token = generation
+        gapTimer?.invalidate()
+        gapTimer = Timer.scheduledTimer(withTimeInterval: remaining, repeats: false) { [weak self] _ in
+            DispatchQueue.main.async {
+                guard let self, token == self.generation, self.pendingIndex == index else { return }
+                self.pendingIndex = nil
+                self.startClip(at: index)
+            }
         }
     }
 
