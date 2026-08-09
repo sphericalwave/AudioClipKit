@@ -2,6 +2,17 @@
 
 Record, trim, normalize, and play back short audio clips in SwiftUI apps.
 
+## Components
+
+<!-- SCREENSHOTS:START -->
+| Component | Preview |
+| --- | --- |
+| `AudioRecordingSheet` | ![AudioRecordingSheet](Docs/img/audio-recording-sheet.png) |
+| `MiniPlayerBar` | ![MiniPlayerBar](Docs/img/mini-player-bar.png) |
+| `StaticWaveformView` | ![StaticWaveformView](Docs/img/static-waveform-view.png) |
+| `WaveformBars` | ![WaveformBars](Docs/img/waveform-bars.png) |
+<!-- SCREENSHOTS:END -->
+
 ## Requirements
 
 - iOS 17+ / macOS 14+

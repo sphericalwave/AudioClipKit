@@ -145,3 +145,14 @@ public struct AudioRecordingSheet: View {
         }
     }
 }
+
+#if DEBUG
+#Preview("AudioRecordingSheet") {
+    AudioRecordingSheet(
+        title: "Record Script",
+        bodyText: "Breathe in slowly for four counts, hold for four, and release "
+            + "for four. Let each exhale settle you a little deeper.",
+        recorder: AudioClipRecorder()
+    ) { _, _ in }
+}
+#endif

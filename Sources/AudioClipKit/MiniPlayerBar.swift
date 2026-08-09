@@ -87,3 +87,18 @@ private struct MiniPlayerCountdown: View {
         }
     }
 }
+
+#if DEBUG
+#Preview("MiniPlayerBar") {
+    MiniPlayerBar(
+        title: "Morning Meditation",
+        subtitle: "Track 2 of 5",
+        progress: 0.42,
+        isPlaying: true,
+        countdownTarget: Date().addingTimeInterval(45),
+        onTogglePlayPause: {},
+        onTap: {}
+    )
+    .padding(.vertical)
+}
+#endif
