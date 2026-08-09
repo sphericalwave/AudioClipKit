@@ -149,3 +149,18 @@ public struct StaticWaveformView: View {
             }
     }
 }
+
+#if DEBUG
+#Preview("WaveformBars") {
+    WaveformBars(peaks: AudioClipKitSamples.peaks, color: .accentColor)
+        .frame(height: 60)
+        .padding()
+}
+
+#Preview("StaticWaveformView") {
+    let _ = AudioClipKitSamples.seedWaveformCache()
+    StaticWaveformView(clip: AudioClipKitSamples.clip, color: .accentColor, progress: 0.35)
+        .frame(height: 60)
+        .padding()
+}
+#endif
