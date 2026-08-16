@@ -27,7 +27,8 @@ public struct AudioNormalizer {
     public static func normalizeRMS(url: URL,
                                     targetRMSDB: Float = -20.0,
                                     toleranceDB: Float = 1.0,
-                                    peakCeiling: Float = 0.99) throws -> RMSResult {
+                                    peakCeiling: Float = 0.99,
+                                    excludeSilence: Bool = false) throws -> RMSResult {
         let inputFile = try AVAudioFile(forReading: url)
         let format = inputFile.processingFormat
         let frameCount = AVAudioFrameCount(inputFile.length)
@@ -48,18 +49,30 @@ public struct AudioNormalizer {
         let channelCount = Int(format.channelCount)
         let frameLength = Int(buffer.frameLength)
 
+        // RMS is computed over the voiced range when `excludeSilence` is set,
+        // so leftover lead/trail dead air doesn't drag the target gain down —
+        // but the peak scan (below) stays over the full buffer since a
+        // transient outside that range should still cap the gain.
+        var rmsStart = 0
+        var rmsLength = frameLength
+        if excludeSilence, let bounds = try? AudioTrimmer.detectSilence(url: url) {
+            rmsStart = Int(bounds.startFrame)
+            rmsLength = Int(bounds.endFrame - bounds.startFrame)
+        }
+        guard rmsLength > 0 else { return .skippedEmpty }
+
         // Combined RMS across all channels: sqrt(sum_of_squares / total_samples).
         var totalSS: Float = 0
         var peak: Float = 0
         for ch in 0..<channelCount {
             var ss: Float = 0
-            vDSP_svesq(floatData[ch], 1, &ss, vDSP_Length(frameLength))
+            vDSP_svesq(floatData[ch] + rmsStart, 1, &ss, vDSP_Length(rmsLength))
             totalSS += ss
             var chPeak: Float = 0
             vDSP_maxmgv(floatData[ch], 1, &chPeak, vDSP_Length(frameLength))
             peak = max(peak, chPeak)
         }
-        let totalSamples = Float(frameLength * channelCount)
+        let totalSamples = Float(rmsLength * channelCount)
         let rms = (totalSamples > 0) ? sqrt(totalSS / totalSamples) : 0
 
         guard rms > 0.0001 else { return .skippedEmpty }
@@ -100,7 +113,7 @@ public struct AudioNormalizer {
 
     /// Read-only RMS measurement. Returns average power in dBFS (negative
     /// value). Nil for empty/silent files.
-    public static func measureRMS(url: URL) -> Float? {
+    public static func measureRMS(url: URL, excludeSilence: Bool = false) -> Float? {
         guard let inputFile = try? AVAudioFile(forReading: url) else { return nil }
         let format = inputFile.processingFormat
         let frameCount = AVAudioFrameCount(inputFile.length)
@@ -109,14 +122,20 @@ public struct AudioNormalizer {
               (try? inputFile.read(into: buffer)) != nil,
               let floatData = buffer.floatChannelData else { return nil }
         let channelCount = Int(format.channelCount)
-        let frameLength = Int(buffer.frameLength)
+        var start = 0
+        var length = Int(buffer.frameLength)
+        if excludeSilence, let bounds = try? AudioTrimmer.detectSilence(url: url) {
+            start = Int(bounds.startFrame)
+            length = Int(bounds.endFrame - bounds.startFrame)
+        }
+        guard length > 0 else { return nil }
         var totalSS: Float = 0
         for ch in 0..<channelCount {
             var ss: Float = 0
-            vDSP_svesq(floatData[ch], 1, &ss, vDSP_Length(frameLength))
+            vDSP_svesq(floatData[ch] + start, 1, &ss, vDSP_Length(length))
             totalSS += ss
         }
-        let rms = sqrt(totalSS / Float(frameLength * channelCount))
+        let rms = sqrt(totalSS / Float(length * channelCount))
         guard rms > 0.0001 else { return nil }
         return 20 * log10(rms)
     }
