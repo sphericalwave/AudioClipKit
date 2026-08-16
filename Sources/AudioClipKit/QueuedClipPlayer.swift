@@ -59,6 +59,8 @@ public final class QueuedClipPlayer<Clip: AudioClip>: ObservableObject {
     private let priorityClip: Clip?
     private let priorityInterval: Int
     private var playsSincePriority = 0
+    private let repeatPerClip: Int
+    private var currentClipPlayCount = 0
 
     private var currentFile: AVAudioFile?
     private var currentDuration: Double = 0
@@ -75,7 +77,8 @@ public final class QueuedClipPlayer<Clip: AudioClip>: ObservableObject {
         randomGapHigh: Double = 15,
         randomEar: Bool = false,
         priorityClip: Clip? = nil,
-        priorityInterval: Int = 7
+        priorityInterval: Int = 7,
+        repeatPerClip: Int = 1
     ) {
         self.allClips = clips
         self.stack = randomMode ? clips.shuffled() : clips
@@ -84,6 +87,7 @@ public final class QueuedClipPlayer<Clip: AudioClip>: ObservableObject {
         self.randomEar = randomEar
         self.priorityClip = priorityClip
         self.priorityInterval = priorityInterval
+        self.repeatPerClip = repeatPerClip
         self.gapScheduler = GapScheduler(delay: delay, randomGaps: randomGaps,
                                           randomGapLow: randomGapLow, randomGapHigh: randomGapHigh)
         wireSessionObserver()
@@ -203,6 +207,7 @@ public final class QueuedClipPlayer<Clip: AudioClip>: ObservableObject {
         if let clip = consumeNextPlayable() {
             currentClip = clip
             nowPlayingClip = clip
+            currentClipPlayCount = 1
             playClip(clip)
         } else {
             log("No valid audio found in queue")
@@ -300,7 +305,15 @@ public final class QueuedClipPlayer<Clip: AudioClip>: ObservableObject {
         // killing playback until the app was reopened). Continuously
         // scheduled silence keeps the background-audio assertion alive across
         // the gap; the real clip is queued right behind it.
-        if let nextClip = consumeNextPlayable(), let url = nextClip.audioURL() {
+        let nextClip: Clip?
+        if repeatPerClip > 1, let clip = currentClip, currentClipPlayCount < repeatPerClip {
+            currentClipPlayCount += 1
+            nextClip = clip
+        } else {
+            currentClipPlayCount = 1
+            nextClip = consumeNextPlayable()
+        }
+        if let nextClip, let url = nextClip.audioURL() {
             do {
                 let nextFile = try AVAudioFile(forReading: url)
                 let nextDuration = Double(nextFile.length) / nextFile.processingFormat.sampleRate
