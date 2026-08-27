@@ -78,6 +78,31 @@ public final class ClipPreviewPlayer: NSObject, ObservableObject, AVAudioPlayerD
         startProgressTimer()
     }
 
+    /// Prepare `clip` for playback without starting it, so `seek(to:)` has
+    /// something to act on before the user ever taps play. No-op while
+    /// already playing (don't yank the loaded player out from under active
+    /// playback) or if `clip` is already loaded (don't reset progress).
+    public func load(_ clip: any AudioClip) {
+        guard !isPlaying, loadedID != clip.clipID, let url = clip.audioURL() else { return }
+        guard let p = try? AVAudioPlayer(contentsOf: url) else { return }
+        p.delegate = self
+        p.prepareToPlay()
+        player = p
+        loadedID = clip.clipID
+        progress = 0
+    }
+
+    /// Move the loaded clip's playhead to `progress` (0...1) without
+    /// changing play/pause state, so a paused preview resumes from the
+    /// scrubbed position instead of wherever it last stopped. No-op if no
+    /// clip is loaded yet (nothing to seek within).
+    public func seek(to progress: Double) {
+        guard let p = player else { return }
+        let clamped = min(max(progress, 0), 1)
+        p.currentTime = clamped * p.duration
+        self.progress = clamped
+    }
+
     public func stop() {
         player?.stop()
         player = nil

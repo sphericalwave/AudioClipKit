@@ -65,6 +65,7 @@ public struct WaveformPinPicker: View {
                                 if player.isPlaying { player.toggle(clip) }
                                 let x = min(max(value.location.x, 0), geo.size.width)
                                 pinProgress = geo.size.width > 0 ? Double(x / geo.size.width) : 0
+                                player.seek(to: pinProgress)
                             }
                     )
                 }
@@ -102,6 +103,9 @@ public struct WaveformPinPicker: View {
             }
             .onDisappear { player.stop() }
             .task(id: clip.clipID) {
+                player.load(clip)
+                player.seek(to: pinProgress)
+
                 let id = clip.clipID
                 if let cached = WaveformCache.shared.get(id) {
                     peaks = cached
