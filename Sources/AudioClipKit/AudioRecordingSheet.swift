@@ -14,18 +14,19 @@ import SwiftUI
 
 public struct AudioRecordingSheet: View {
     private let title: String
-    private let bodyText: String
+    @Binding private var bodyText: String
     @ObservedObject private var recorder: AudioClipRecorder
     private let onFinished: (Data, TimeInterval) -> Void
 
     @Environment(\.dismiss) private var dismiss
+    @FocusState private var bodyFocused: Bool
 
     public init(title: String,
-                bodyText: String,
+                bodyText: Binding<String>,
                 recorder: AudioClipRecorder,
                 onFinished: @escaping (Data, TimeInterval) -> Void) {
         self.title = title
-        self.bodyText = bodyText
+        self._bodyText = bodyText
         self.recorder = recorder
         self.onFinished = onFinished
     }
@@ -35,12 +36,21 @@ public struct AudioRecordingSheet: View {
             VStack(spacing: 20) {
                 statusLabel
 
-                ScrollView {
-                    Text(bodyText.isEmpty ? "No script text yet." : bodyText)
+                ZStack(alignment: .topLeading) {
+                    if bodyText.isEmpty {
+                        Text("No script text yet.")
+                            .font(.body)
+                            .foregroundStyle(.secondary)
+                            .padding(.horizontal, 16)
+                            .padding(.vertical, 12)
+                    }
+                    TextEditor(text: $bodyText)
                         .font(.body)
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                        .padding()
+                        .focused($bodyFocused)
+                        .scrollContentBackground(.hidden)
+                        .padding(8)
                 }
+                .frame(maxWidth: .infinity, minHeight: 200)
                 .background(RoundedRectangle(cornerRadius: 12).fill(Color.secondary.opacity(0.08)))
 
                 if let error = recorder.errorMessage {
@@ -64,6 +74,10 @@ public struct AudioRecordingSheet: View {
                             dismiss()
                         }
                     }
+                }
+                ToolbarItemGroup(placement: .keyboard) {
+                    Spacer()
+                    Button("Done") { bodyFocused = false }
                 }
             }
             .onAppear { recorder.requestPermission() }
@@ -150,8 +164,8 @@ public struct AudioRecordingSheet: View {
 #Preview("AudioRecordingSheet") {
     AudioRecordingSheet(
         title: "Record Script",
-        bodyText: "Breathe in slowly for four counts, hold for four, and release "
-            + "for four. Let each exhale settle you a little deeper.",
+        bodyText: .constant("Breathe in slowly for four counts, hold for four, and release "
+            + "for four. Let each exhale settle you a little deeper."),
         recorder: AudioClipRecorder()
     ) { _, _ in }
 }
