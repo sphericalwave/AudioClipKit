@@ -17,6 +17,7 @@ public struct WaveformPinPicker: View {
     private let onConfirm: (TimeInterval) -> Void
 
     @Environment(\.dismiss) private var dismiss
+    @StateObject private var player = ClipPreviewPlayer()
     @State private var peaks: [Float] = []
     @State private var pinProgress: Double = 0.5
 
@@ -36,8 +37,18 @@ public struct WaveformPinPicker: View {
                     .foregroundStyle(.secondary)
                     .multilineTextAlignment(.center)
 
-                Text(timeString(pinProgress * duration))
-                    .font(.title2.monospacedDigit())
+                HStack(spacing: 16) {
+                    Button {
+                        player.toggle(clip)
+                    } label: {
+                        Image(systemName: player.isPlaying ? "pause.circle.fill" : "play.circle.fill")
+                            .font(.system(size: 36))
+                    }
+                    .buttonStyle(.plain)
+
+                    Text(timeString(pinProgress * duration))
+                        .font(.title2.monospacedDigit())
+                }
 
                 GeometryReader { geo in
                     ZStack(alignment: .leading) {
@@ -51,6 +62,7 @@ public struct WaveformPinPicker: View {
                     .gesture(
                         DragGesture(minimumDistance: 0)
                             .onChanged { value in
+                                if player.isPlaying { player.toggle(clip) }
                                 let x = min(max(value.location.x, 0), geo.size.width)
                                 pinProgress = geo.size.width > 0 ? Double(x / geo.size.width) : 0
                             }
@@ -61,6 +73,7 @@ public struct WaveformPinPicker: View {
                 Spacer()
 
                 Button {
+                    player.stop()
                     onConfirm(pinProgress * duration)
                     dismiss()
                 } label: {
@@ -76,9 +89,18 @@ public struct WaveformPinPicker: View {
             #endif
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
-                    Button("Cancel") { dismiss() }
+                    Button("Cancel") { player.stop(); dismiss() }
                 }
             }
+            .onChange(of: player.progress) { _, newValue in
+                // Pin tracks live playback so pausing at the right moment
+                // is how the user locates the insertion point; a manual
+                // drag stops playback first (above), so this never fights
+                // an in-progress drag.
+                guard player.isPlaying else { return }
+                pinProgress = newValue
+            }
+            .onDisappear { player.stop() }
             .task(id: clip.clipID) {
                 let id = clip.clipID
                 if let cached = WaveformCache.shared.get(id) {
