@@ -292,22 +292,32 @@ public final class SequentialClipPlayer: NSObject, ObservableObject {
     }
 
     #if os(iOS)
+    // `AVAudioSession.interruptionNotification` is not guaranteed to post on
+    // the main thread — this observer has no `queue:`, so the callback runs
+    // on whatever thread the audio session posts from. `pause()`/`resume()`
+    // mutate `@Published` state and touch the engine/player node directly,
+    // so this must hop to the main actor before doing anything, or an
+    // interruption arriving mid-playback (a call, Siri, a route change) can
+    // race the main thread and silently crash.
     @objc private func handleInterruption(_ note: Notification) {
         guard let raw = note.userInfo?[AVAudioSessionInterruptionTypeKey] as? UInt,
               let type = AVAudioSession.InterruptionType(rawValue: raw) else { return }
-        switch type {
-        case .began:
-            log("interruption began \(diagnosticDescription)")
-            pause()
-        case .ended:
-            let optsRaw = note.userInfo?[AVAudioSessionInterruptionOptionKey] as? UInt ?? 0
-            let opts = AVAudioSession.InterruptionOptions(rawValue: optsRaw)
-            log("interruption ended shouldResume=\(opts.contains(.shouldResume)) \(diagnosticDescription)")
-            if opts.contains(.shouldResume) {
-                resume()
+        DispatchQueue.main.async { [weak self] in
+            guard let self else { return }
+            switch type {
+            case .began:
+                self.log("interruption began \(self.diagnosticDescription)")
+                self.pause()
+            case .ended:
+                let optsRaw = note.userInfo?[AVAudioSessionInterruptionOptionKey] as? UInt ?? 0
+                let opts = AVAudioSession.InterruptionOptions(rawValue: optsRaw)
+                self.log("interruption ended shouldResume=\(opts.contains(.shouldResume)) \(self.diagnosticDescription)")
+                if opts.contains(.shouldResume) {
+                    self.resume()
+                }
+            @unknown default:
+                break
             }
-        @unknown default:
-            break
         }
     }
     #endif
