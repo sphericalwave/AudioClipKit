@@ -94,6 +94,7 @@ public final class SequentialClipPlayer: NSObject, ObservableObject {
         super.init()
         setupEngine()
         registerInterruptionObserver()
+        registerConfigurationChangeObserver()
         registerLifecycleObservers()
     }
 
@@ -104,15 +105,44 @@ public final class SequentialClipPlayer: NSObject, ObservableObject {
     private func setupEngine() {
         engine.attach(playerNode)
         engine.attach(boostEQ)
-        engine.connect(playerNode, to: boostEQ, format: nil)
-        engine.connect(boostEQ, to: engine.mainMixerNode, format: nil)
+        connectChain()
         boostEQ.globalGain = linearToDB(gain)
     }
 
-    private func startEngine() {
-        guard !engine.isRunning else { return }
+    /// Wires playerNode → boostEQ → mainMixer at the engine's current format.
+    /// Re-run after a configuration change, when the old connections are
+    /// stale (the hardware format they were made against is gone).
+    private func connectChain() {
+        engine.connect(playerNode, to: boostEQ, format: nil)
+        engine.connect(boostEQ, to: engine.mainMixerNode, format: nil)
+    }
+
+    /// Starts the engine if it isn't already running. Returns whether the
+    /// engine is running afterwards — callers must check, because
+    /// `AVAudioPlayerNode.play()` on a stopped engine raises an Objective-C
+    /// exception, which Swift cannot catch and which kills the app.
+    ///
+    /// A first failure is usually the session having been taken away (an
+    /// interruption that ended without `.shouldResume`, a route change that
+    /// deactivated us), so re-arm it and try once more before giving up.
+    @discardableResult
+    private func startEngine() -> Bool {
+        if engine.isRunning { return true }
         engine.prepare()
-        try? engine.start()
+        do {
+            try engine.start()
+            return true
+        } catch {
+            log("engine start failed: \(error.localizedDescription) — re-arming session")
+        }
+        AudioSessionConfigurator.configureForPlayback()
+        do {
+            try engine.start()
+            return true
+        } catch {
+            log("engine start failed after re-arming session: \(error.localizedDescription)")
+            return false
+        }
     }
 
     /// Start playing `clips` from the top. An empty list is a no-op (it does
@@ -160,7 +190,10 @@ public final class SequentialClipPlayer: NSObject, ObservableObject {
         }
         guard currentFile != nil else { return }
         AudioSessionConfigurator.configureForPlayback()
-        startEngine()
+        guard startEngine() else {
+            log("resume aborted — engine would not start \(diagnosticDescription)")
+            return
+        }
         playerNode.play()
         isPlaying = true
         isPaused = false
@@ -188,10 +221,14 @@ public final class SequentialClipPlayer: NSObject, ObservableObject {
         estimatedEndDate = nil
     }
 
-    private func startClip(at index: Int) {
+    /// Plays `clips[index]`, optionally starting `offset` seconds in — which
+    /// is how a clip picks itself back up after the engine was torn down
+    /// mid-playback by a configuration change. A resumed clip doesn't re-fire
+    /// `onAdvance`: it never stopped being the clip that's playing.
+    private func startClip(at index: Int, offset: Double = 0, resuming: Bool = false) {
         guard index < clips.count else { finish(); return }
         progress = 0
-        accumulatedSeconds = 0
+        accumulatedSeconds = resuming ? offset : 0
         trackStartDate = nil
 
         // A clip with no audio (or an unreadable/zero-length file) is skipped
@@ -208,20 +245,41 @@ public final class SequentialClipPlayer: NSObject, ObservableObject {
         currentFile = file
         currentDuration = Double(file.length) / file.processingFormat.sampleRate
 
-        startEngine()
+        guard startEngine() else {
+            log("startClip(\(index)) aborted — engine would not start \(diagnosticDescription)")
+            isPlaying = false
+            isPaused = false
+            estimatedEndDate = nil
+            stopProgressTimer()
+            return
+        }
         playerNode.stop()
-        playerNode.scheduleFile(file, at: nil, completionCallbackType: .dataPlayedBack) { [weak self] _ in
+
+        let advanceWhenFinished: (AVAudioPlayerNodeCompletionCallbackType) -> Void = { [weak self] _ in
             DispatchQueue.main.async {
                 guard let self, token == self.generation else { return }
                 self.advance()
             }
         }
+
+        let sampleRate = file.processingFormat.sampleRate
+        let startFrame = AVAudioFramePosition((offset * sampleRate).rounded())
+        let remainingFrames = file.length - startFrame
+        if startFrame > 0, remainingFrames > 0 {
+            playerNode.scheduleSegment(file, startingFrame: startFrame,
+                                       frameCount: AVAudioFrameCount(remainingFrames),
+                                       at: nil, completionCallbackType: .dataPlayedBack,
+                                       completionHandler: advanceWhenFinished)
+        } else {
+            playerNode.scheduleFile(file, at: nil, completionCallbackType: .dataPlayedBack,
+                                    completionHandler: advanceWhenFinished)
+        }
         playerNode.play()
         isPlaying = true
         isPaused = false
         trackStartDate = Date()
-        estimatedEndDate = trackStartDate!.addingTimeInterval(currentDuration)
-        onAdvance?(index)
+        estimatedEndDate = trackStartDate!.addingTimeInterval(currentDuration - accumulatedSeconds)
+        if !resuming { onAdvance?(index) }
         startProgressTimer()
     }
 
@@ -321,6 +379,41 @@ public final class SequentialClipPlayer: NSObject, ObservableObject {
         }
     }
     #endif
+
+    // MARK: - Configuration changes (route changes, sample-rate changes)
+
+    /// iOS stops the engine and invalidates its connections whenever the
+    /// audio hardware configuration changes underneath it — unplugging
+    /// headphones, a Bluetooth device switching between A2DP and HFP, a
+    /// sample-rate change. Nothing restarts it on its own, so without this
+    /// the script simply goes quiet mid-scene and the app looks asleep.
+    private func registerConfigurationChangeObserver() {
+        NotificationCenter.default.addObserver(
+            self,
+            selector: #selector(handleConfigurationChange),
+            name: .AVAudioEngineConfigurationChange,
+            object: engine
+        )
+    }
+
+    @objc private func handleConfigurationChange(_ note: Notification) {
+        // Posted on whatever thread the audio system is on; everything below
+        // touches @Published state and the engine graph.
+        DispatchQueue.main.async { [weak self] in
+            guard let self else { return }
+            let wasPlaying = self.isPlaying
+            let elapsed = self.accumulatedSeconds
+                + (self.trackStartDate.map { Date().timeIntervalSince($0) } ?? 0)
+            self.log("configuration change wasPlaying=\(wasPlaying) elapsed=\(elapsed) \(self.diagnosticDescription)")
+
+            // The old connections were made against hardware that's gone.
+            self.connectChain()
+            guard wasPlaying, self.pendingIndex == nil else { return }
+            self.startClip(at: self.currentIndex,
+                           offset: min(max(elapsed, 0), self.currentDuration),
+                           resuming: true)
+        }
+    }
 
     // MARK: - App lifecycle (background/foreground diagnostics)
 
