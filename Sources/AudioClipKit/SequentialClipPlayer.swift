@@ -112,9 +112,23 @@ public final class SequentialClipPlayer: NSObject, ObservableObject {
     /// Wires playerNode → boostEQ → mainMixer at the engine's current format.
     /// Re-run after a configuration change, when the old connections are
     /// stale (the hardware format they were made against is gone).
-    private func connectChain() {
+    ///
+    /// Returns false when the hardware isn't describable yet — a
+    /// configuration change fires while the old route is still coming apart,
+    /// and until it settles the output format reads back as 0 Hz. Connecting
+    /// against a format like that raises an Objective-C exception, which
+    /// Swift cannot catch and which takes the process with it.
+    @discardableResult
+    private func connectChain() -> Bool {
+        let format = engine.outputNode.outputFormat(forBus: 0)
+        guard format.sampleRate > 0, format.channelCount > 0 else {
+            log("connectChain skipped — no usable output format "
+                + "(sr=\(format.sampleRate) ch=\(format.channelCount))")
+            return false
+        }
         engine.connect(playerNode, to: boostEQ, format: nil)
         engine.connect(boostEQ, to: engine.mainMixerNode, format: nil)
+        return true
     }
 
     /// Starts the engine if it isn't already running. Returns whether the
@@ -406,8 +420,18 @@ public final class SequentialClipPlayer: NSObject, ObservableObject {
                 + (self.trackStartDate.map { Date().timeIntervalSince($0) } ?? 0)
             self.log("configuration change wasPlaying=\(wasPlaying) elapsed=\(elapsed) \(self.diagnosticDescription)")
 
+            // Arm the session first: until it's active the engine can't
+            // describe its own output, and the rewire below would be asking
+            // about hardware that isn't there yet.
+            AudioSessionConfigurator.configureForPlayback()
+
             // The old connections were made against hardware that's gone.
-            self.connectChain()
+            guard self.connectChain() else {
+                self.isPlaying = false
+                self.estimatedEndDate = nil
+                self.stopProgressTimer()
+                return
+            }
             guard wasPlaying, self.pendingIndex == nil else { return }
             self.startClip(at: self.currentIndex,
                            offset: min(max(elapsed, 0), self.currentDuration),
