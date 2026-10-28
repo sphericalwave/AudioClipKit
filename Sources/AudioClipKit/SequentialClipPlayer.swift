@@ -59,6 +59,16 @@ public final class SequentialClipPlayer: NSObject, ObservableObject {
     /// the next advance to a new clip.
     public var gapSeconds: Double = 0
 
+    /// Optional stage between the gain EQ and the main mixer — a spatial
+    /// placement stage, say. Called with the player's engine every time the
+    /// chain is wired (on assignment, and after each configuration change):
+    /// attach and wire whatever it needs, and return the node the gain stage
+    /// should feed. Nil (the default) feeds the main mixer directly. Assign
+    /// while stopped.
+    public var outputStage: ((AVAudioEngine) -> AVAudioNode)? {
+        didSet { connectChain() }
+    }
+
     // AVAudioEngine pipeline: playerNode → boostEQ (gain stage) → mainMixer.
     private let engine = AVAudioEngine()
     private let playerNode = AVAudioPlayerNode()
@@ -109,7 +119,8 @@ public final class SequentialClipPlayer: NSObject, ObservableObject {
         boostEQ.globalGain = linearToDB(gain)
     }
 
-    /// Wires playerNode → boostEQ → mainMixer at the engine's current format.
+    /// Wires playerNode → boostEQ → (outputStage →) mainMixer at the engine's
+    /// current format.
     /// Re-run after a configuration change, when the old connections are
     /// stale (the hardware format they were made against is gone).
     ///
@@ -127,7 +138,7 @@ public final class SequentialClipPlayer: NSObject, ObservableObject {
             return false
         }
         engine.connect(playerNode, to: boostEQ, format: nil)
-        engine.connect(boostEQ, to: engine.mainMixerNode, format: nil)
+        engine.connect(boostEQ, to: outputStage?(engine) ?? engine.mainMixerNode, format: nil)
         return true
     }
 
@@ -166,6 +177,9 @@ public final class SequentialClipPlayer: NSObject, ObservableObject {
         self.clips = clips
         guard !clips.isEmpty else { return }
         AudioSessionConfigurator.configureForPlayback()
+        // Wired once more now the session is armed, in case the stage was
+        // assigned before the hardware could be described.
+        if outputStage != nil { connectChain() }
         startEngine()
         currentIndex = 0
         startClip(at: 0)

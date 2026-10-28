@@ -11,6 +11,7 @@ Record, trim, normalize, and play back short audio clips in SwiftUI apps.
 | `MiniPlayerBar` | ![MiniPlayerBar](Docs/img/mini-player-bar.png) |
 | `StaticWaveformView` | ![StaticWaveformView](Docs/img/static-waveform-view.png) |
 | `WaveformBars` | ![WaveformBars](Docs/img/waveform-bars.png) |
+| `WaveformPinPicker` | ![WaveformPinPicker](Docs/img/waveform-pin-picker.png) |
 <!-- SCREENSHOTS:END -->
 
 ## Requirements
