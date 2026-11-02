@@ -27,8 +27,10 @@ final class ScreenshotGenTests: XCTestCase {
             ("AudioRecordingSheet", CGSize(width: 390, height: 640),
              AnyView(AudioRecordingSheet(
                 title: "Record Script",
-                bodyText: "Breathe in slowly for four counts, hold for four, and release for four.",
+                bodyText: .constant("Breathe in slowly for four counts, hold for four, and release for four."),
                 recorder: AudioClipRecorder()) { _, _ in })),
+            ("WaveformPinPicker", CGSize(width: 390, height: 640),
+             AnyView(WaveformPinPicker(clip: AudioClipKitSamples.clip, duration: 42) { _ in })),
         ]
     }
 
