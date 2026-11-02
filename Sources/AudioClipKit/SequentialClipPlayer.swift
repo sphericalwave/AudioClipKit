@@ -36,6 +36,11 @@ public final class SequentialClipPlayer: NSObject, ObservableObject {
     public var onFinishedAll: (() -> Void)?
     /// Fired as each clip begins, with its index.
     public var onAdvance: ((Int) -> Void)?
+    /// Fired as a silent gap begins — between clips, or a `play(_:leadingGap:)`
+    /// lead-in — with the index of the clip it precedes and the gap's length.
+    /// Not re-fired when a paused gap resumes. A host can fill the silence
+    /// (a short spoken cue, say) knowing nothing else is playing.
+    public var onGapBegan: ((_ beforeIndex: Int, _ seconds: Double) -> Void)?
     /// Diagnostic sink. Assign to route logs into a host's logger.
     public var log: (String) -> Void = { _ in }
 
@@ -350,6 +355,7 @@ public final class SequentialClipPlayer: NSObject, ObservableObject {
         gapStartDate = Date()
         estimatedEndDate = gapStartDate!.addingTimeInterval(length)
         scheduleGapTimer(remaining: length, index: index)
+        onGapBegan?(index, length)
     }
 
     private func scheduleGapTimer(remaining: Double, index: Int) {

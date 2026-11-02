@@ -457,6 +457,43 @@ final class AudioClipKitTests: XCTestCase {
     }
 
     @MainActor
+    func testGapBeganFiresForLeadingGapButNotOnResume() {
+        let player = SequentialClipPlayer()
+        var gaps: [(Int, Double)] = []
+        player.onGapBegan = { gaps.append(($0, $1)) }
+        player.play([DummyClip(clipID: 1, url: nil)], leadingGap: 12)
+        XCTAssertEqual(gaps.count, 1)
+        XCTAssertEqual(gaps.first?.0, 0)
+        XCTAssertEqual(gaps.first?.1, 12)
+        player.pause()
+        player.resume()
+        XCTAssertEqual(gaps.count, 1, "resuming a gap is not a new gap")
+        player.stop()
+    }
+
+    @MainActor
+    func testGapBeganFiresBetweenClips() {
+        let player = SequentialClipPlayer()
+        player.gapSeconds = 5
+        var gaps: [Int] = []
+        player.onGapBegan = { index, _ in gaps.append(index) }
+        // The first audioless clip is skipped, which advances into the gap
+        // before clip 1.
+        player.play([DummyClip(clipID: 1, url: nil), DummyClip(clipID: 2, url: nil)])
+        XCTAssertEqual(gaps, [1])
+        player.stop()
+    }
+
+    @MainActor
+    func testNoGapMeansNoGapBegan() {
+        let player = SequentialClipPlayer()
+        var fired = false
+        player.onGapBegan = { _, _ in fired = true }
+        player.play([DummyClip(clipID: 1, url: nil), DummyClip(clipID: 2, url: nil)])
+        XCTAssertFalse(fired)
+    }
+
+    @MainActor
     func testZeroLeadingGapStartsImmediately() {
         let player = SequentialClipPlayer()
         var finished = false
