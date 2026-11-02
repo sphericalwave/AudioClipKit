@@ -411,4 +411,58 @@ final class AudioClipKitTests: XCTestCase {
         wait(for: [exp], timeout: 1)
         XCTAssertFalse(player.isPlaying)
     }
+
+    @MainActor
+    func testLeadingGapDelaysFirstClipAndReportsPlaying() throws {
+        let player = SequentialClipPlayer()
+        var advanced: [Int] = []
+        player.onAdvance = { advanced.append($0) }
+        let before = Date()
+        player.play([DummyClip(clipID: 1, url: nil)], leadingGap: 10)
+        // Waiting out the lead-in counts as playing, with the gap's end as
+        // the estimate, and no clip has started yet.
+        XCTAssertTrue(player.isPlaying)
+        XCTAssertEqual(player.currentIndex, 0)
+        XCTAssertTrue(advanced.isEmpty, "first clip must wait for the leading gap")
+        let end = try XCTUnwrap(player.estimatedEndDate)
+        XCTAssertEqual(end.timeIntervalSince(before), 10, accuracy: 0.5)
+        player.stop()
+    }
+
+    @MainActor
+    func testLeadingGapResumesWithItsOwnLength() throws {
+        let player = SequentialClipPlayer()
+        player.gapSeconds = 2   // between-clip gap differs from the lead-in
+        player.play([DummyClip(clipID: 1, url: nil)], leadingGap: 30)
+        player.pause()
+        XCTAssertFalse(player.isPlaying)
+        XCTAssertNil(player.estimatedEndDate)
+        let resumedAt = Date()
+        player.resume()
+        XCTAssertTrue(player.isPlaying)
+        // Resumes the 30 s lead-in, not the 2 s between-clip gap.
+        let end = try XCTUnwrap(player.estimatedEndDate)
+        XCTAssertEqual(end.timeIntervalSince(resumedAt), 30, accuracy: 0.5)
+        player.stop()
+    }
+
+    @MainActor
+    func testLeadingGapThenSequenceCompletes() {
+        let player = SequentialClipPlayer()
+        let exp = expectation(description: "finished")
+        player.onFinishedAll = { exp.fulfill() }
+        player.play([DummyClip(clipID: 1, url: nil)], leadingGap: 0.2)
+        wait(for: [exp], timeout: 2)
+        XCTAssertFalse(player.isPlaying)
+    }
+
+    @MainActor
+    func testZeroLeadingGapStartsImmediately() {
+        let player = SequentialClipPlayer()
+        var finished = false
+        player.onFinishedAll = { finished = true }
+        // An audioless clip with no lead-in is skipped synchronously.
+        player.play([DummyClip(clipID: 1, url: nil)], leadingGap: 0)
+        XCTAssertTrue(finished)
+    }
 }

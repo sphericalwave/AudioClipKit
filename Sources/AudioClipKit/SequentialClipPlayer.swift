@@ -86,6 +86,10 @@ public final class SequentialClipPlayer: NSObject, ObservableObject {
     private var pendingIndex: Int?
     private var gapStartDate: Date?
     private var gapAccumulated: Double = 0
+    /// Full length of the gap being waited out — `gapSeconds` between clips,
+    /// or `play(_:leadingGap:)`'s lead-in — so a resume mid-gap waits out the
+    /// rest of *that* gap.
+    private var gapLength: Double = 0
 
     // Bumped whenever the schedule changes (advance / stop). A file-finished
     // completion callback only advances if its captured token still matches —
@@ -172,7 +176,15 @@ public final class SequentialClipPlayer: NSObject, ObservableObject {
 
     /// Start playing `clips` from the top. An empty list is a no-op (it does
     /// NOT count as a completed run).
-    public func play(_ clips: [any AudioClip]) {
+    ///
+    /// `leadingGap` waits out that much silence before the first clip, exactly
+    /// like the `gapSeconds` gap between clips: the player reports
+    /// `isPlaying`, pauses and resumes mid-gap, and keeps the engine running so
+    /// a backgrounded app isn't suspended during the silence. Hosts that chain
+    /// sequences back-to-back from `onFinishedAll` pass their gap here so the
+    /// pause between the last clip of one sequence and the first of the next
+    /// isn't dropped.
+    public func play(_ clips: [any AudioClip], leadingGap: Double = 0) {
         stop()
         self.clips = clips
         guard !clips.isEmpty else { return }
@@ -182,7 +194,13 @@ public final class SequentialClipPlayer: NSObject, ObservableObject {
         if outputStage != nil { connectChain() }
         startEngine()
         currentIndex = 0
-        startClip(at: 0)
+        if leadingGap > 0 {
+            isPlaying = true
+            isPaused = false
+            beginGap(before: 0, length: leadingGap)
+        } else {
+            startClip(at: 0)
+        }
     }
 
     public func pause() {
@@ -210,7 +228,7 @@ public final class SequentialClipPlayer: NSObject, ObservableObject {
         if let index = pendingIndex {
             isPlaying = true
             isPaused = false
-            let remaining = max(gapSeconds - gapAccumulated, 0)
+            let remaining = max(gapLength - gapAccumulated, 0)
             gapStartDate = Date()
             estimatedEndDate = gapStartDate!.addingTimeInterval(remaining)
             scheduleGapTimer(remaining: remaining, index: index)
@@ -321,15 +339,17 @@ public final class SequentialClipPlayer: NSObject, ObservableObject {
         }
     }
 
-    private func beginGap(before index: Int) {
-        guard gapSeconds > 0 else { startClip(at: index); return }
+    private func beginGap(before index: Int, length: Double? = nil) {
+        let length = length ?? gapSeconds
+        guard length > 0 else { startClip(at: index); return }
         progress = 0
         stopProgressTimer()
         pendingIndex = index
+        gapLength = length
         gapAccumulated = 0
         gapStartDate = Date()
-        estimatedEndDate = gapStartDate!.addingTimeInterval(gapSeconds)
-        scheduleGapTimer(remaining: gapSeconds, index: index)
+        estimatedEndDate = gapStartDate!.addingTimeInterval(length)
+        scheduleGapTimer(remaining: length, index: index)
     }
 
     private func scheduleGapTimer(remaining: Double, index: Int) {
